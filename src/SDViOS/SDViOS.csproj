@@ -1,0 +1,57 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net8.0-ios17.0</TargetFramework>
+    <OutputType>Exe</OutputType>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <SupportedOSPlatformVersion>14.0</SupportedOSPlatformVersion>
+    <TargetPlatformIdentifier>ios</TargetPlatformIdentifier>
+
+    <!-- Disable EOL workload errors on newer runner SDKs -->
+    <CheckEolWorkloads>false</CheckEolWorkloads>
+    <CheckEolTargetFramework>false</CheckEolTargetFramework>
+
+    <!-- Ad-hoc signing for sideloading (TrollStore, AltStore, Sideloadly) -->
+    <EnableCodeSigning>false</EnableCodeSigning>
+    <CodesignKey>-</CodesignKey>
+
+    <!-- Mono Interpreter enabled for dynamic assembly execution (SMAPI & mods) -->
+    <UseInterpreter>true</UseInterpreter>
+    <MtouchLink>None</MtouchLink>
+    <PublishTrimmed>true</PublishTrimmed>
+    <MtouchExtraArgs>$(MtouchExtraArgs) --setenv=MONO_GC_PARAMS=nursery-size=4m,soft-heap-limit=384m,evacuation-threshold=66</MtouchExtraArgs>
+
+    <ApplicationTitle>Stardew Mobile</ApplicationTitle>
+    <ApplicationId>com.mudkip.sdvmobile</ApplicationId>
+    <ApplicationVersion>1.6.15</ApplicationVersion>
+    <ApplicationDisplayVersion>1.6.15</ApplicationDisplayVersion>
+
+    <!-- Enable task debugging / JIT execution where available -->
+    <CodesignEntitlements>Entitlements.plist</CodesignEntitlements>
+    <EnableDefaultCompileItems>true</EnableDefaultCompileItems>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Reference Include="MonoGame.Framework">
+      <HintPath>..\..\lib\MonoGame.Framework.dll</HintPath>
+    </Reference>
+    <Reference Include="MonoMod.Common">
+      <HintPath>..\..\lib\MonoMod.Common.dll</HintPath>
+    </Reference>
+    <PackageReference Include="SkiaSharp" Version="2.88.8" />
+    <PackageReference Include="Newtonsoft.Json" Version="13.0.3" />
+    <PackageReference Include="Mono.Cecil" Version="0.11.5" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Include="Info.plist" />
+    <None Include="Entitlements.plist" />
+    <EmbeddedResource Include="Resources\0Harmony.dll" />
+    <EmbeddedResource Include="Resources\Mods\SDViOSTouchControls\manifest.json" />
+    <EmbeddedResource Include="Resources\Mods\SDViOSTouchControls\SDViOSTouchControls.dll" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <BundleResource Include="Resources/AppIcons/*.png" Link="%(Filename)%(Extension)" />
+  </ItemGroup>
+</Project>

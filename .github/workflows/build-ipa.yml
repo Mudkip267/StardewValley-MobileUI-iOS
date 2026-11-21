@@ -1,0 +1,94 @@
+name: Build Stardew Valley iOS IPA
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+    inputs:
+      include_release:
+        description: 'Publish as GitHub Release'
+        required: false
+        type: boolean
+        default: false
+
+jobs:
+  build:
+    runs-on: macos-14
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup .NET 8 SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Install .NET iOS Workload
+        run: |
+          dotnet workload install ios --skip-manifest-update
+
+      - name: Patch MonoGame Framework
+        run: |
+          dotnet run --project tools/PatchMonoGame
+
+      - name: Restore NuGet Packages
+        run: |
+          dotnet restore src/SDViOS/SDViOS.csproj -p:CheckEolWorkloads=false -p:CheckEolTargetFramework=false
+
+      - name: Build and Publish iOS App
+        run: |
+          dotnet publish src/SDViOS/SDViOS.csproj \
+            -f net8.0-ios17.0 \
+            -c Release \
+            -p:Platform=iPhone \
+            -p:RuntimeIdentifier=ios-arm64 \
+            -p:ArchiveOnBuild=false \
+            -p:EnableCodeSigning=false \
+            -p:CodesignKey="" \
+            -p:CodesignProvision="" \
+            -p:CheckEolWorkloads=false \
+            -p:CheckEolTargetFramework=false \
+            -o ./publish
+
+      - name: Package IPA
+        run: |
+          if [ -f "./publish/SDViOS.ipa" ]; then
+            echo "Found generated IPA: ./publish/SDViOS.ipa"
+            cp ./publish/SDViOS.ipa ./StardewValley-MobileUI-iOS.ipa
+          else
+            echo "Packaging from .app bundle..."
+            APP_PATH=$(find . -name "*.app" -type d | head -n 1)
+            if [ -z "$APP_PATH" ]; then
+              echo "Error: No .app or .ipa found!"
+              exit 1
+            fi
+            echo "Found .app at: $APP_PATH"
+            mkdir -p ipa_staging/Payload
+            cp -R "$APP_PATH" ipa_staging/Payload/
+            cd ipa_staging
+            zip -r -q ../StardewValley-MobileUI-iOS.ipa Payload
+            cd ..
+          fi
+          ls -lh StardewValley-MobileUI-iOS.ipa
+
+      - name: Upload IPA Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: StardewValley-MobileUI-iOS
+          path: StardewValley-MobileUI-iOS.ipa
+          retention-days: 14
+
+      - name: Create GitHub Release
+        if: ${{ github.ref == 'refs/heads/main' || inputs.include_release || startsWith(github.ref, 'refs/tags/') }}
+        uses: softprops/action-gh-release@v2
+        with:
+          files: StardewValley-MobileUI-iOS.ipa
+          tag_name: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || 'latest' }}
+          name: Stardew Valley Mobile UI iOS (${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || 'Latest Build' }})
+          draft: false
+          prerelease: false
+          make_latest: true

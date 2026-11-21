@@ -1,0 +1,369 @@
+using System;
+using System.Reflection;
+using Foundation;
+using UIKit;
+using SDViOS.Diagnostics;
+using SDViOS.Loader;
+
+namespace SDViOS.Input
+{
+    public static class VirtualKeyboardManager
+    {
+        private static bool _reflectionInitialized = false;
+        private static object? _keyboardDispatcherInstance = null;
+        private static PropertyInfo? _subscriberProp = null;
+        private static PropertyInfo? _selectedProp = null;
+        private static PropertyInfo? _textProp = null;
+        private static PropertyInfo? _titleProp = null;
+        private static MethodInfo? _recieveTextInputMethod = null;
+        private static FieldInfo? _onEnterPressedField = null;
+
+        private static bool _isKeyboardActive = false;
+        private static object? _activeSubscriber = null;
+        private static DateTime _lastSubmitTime = DateTime.MinValue;
+        private static object? _lastSubmittedSubscriber = null;
+
+        public static void Update()
+        {
+            if (_isKeyboardActive) return;
+
+            try
+            {
+                EnsureReflection();
+                if (_keyboardDispatcherInstance == null || _subscriberProp == null) return;
+
+                object? subscriber = _subscriberProp.GetValue(_keyboardDispatcherInstance);
+                if (subscriber == null) return;
+
+                if (subscriber == _lastSubmittedSubscriber && (DateTime.UtcNow - _lastSubmitTime).TotalSeconds < 1.0)
+                {
+                    return;
+                }
+
+                if (_selectedProp == null)
+                {
+                    _selectedProp = subscriber.GetType().GetProperty("Selected");
+                }
+
+                bool isSelected = false;
+                if (_selectedProp != null)
+                {
+                    isSelected = (bool)(_selectedProp.GetValue(subscriber) ?? false);
+                }
+
+                if (isSelected && !_isKeyboardActive)
+                {
+                    ShowKeyboard(subscriber);
+                }
+            }
+            catch (Exception ex)
+            {
+                EngineLogger.LogWarning($"[VirtualKeyboardManager] Update error: {ex.Message}");
+            }
+        }
+
+        public static void ShowKeyboard(object subscriber)
+        {
+            if (_isKeyboardActive) return;
+            _isKeyboardActive = true;
+            _activeSubscriber = subscriber;
+
+            UIApplication.SharedApplication.BeginInvokeOnMainThread(() =>
+            {
+                try
+                {
+                    string currentText = "";
+                    string title = "Enter Text";
+                    try
+                    {
+                        if (_textProp == null)
+                        {
+                            _textProp = subscriber.GetType().GetProperty("Text");
+                        }
+                        currentText = _textProp?.GetValue(subscriber) as string ?? "";
+
+                        if (_titleProp == null)
+                        {
+                            _titleProp = subscriber.GetType().GetProperty("TitleText");
+                        }
+                        var titleVal = _titleProp?.GetValue(subscriber) as string;
+                        if (!string.IsNullOrEmpty(titleVal))
+                        {
+                            title = titleVal;
+                        }
+                    }
+                    catch { }
+
+                    var rootVC = GameHost.GetActiveRootViewController();
+                    if (rootVC == null)
+                    {
+                        _isKeyboardActive = false;
+                        _activeSubscriber = null;
+                        return;
+                    }
+
+                    var alert = UIAlertController.Create(title, null, UIAlertControllerStyle.Alert);
+                    UITextField? textField = null;
+
+                    bool submitted = false;
+                    void DoSubmit()
+                    {
+                        if (submitted) return;
+                        submitted = true;
+                        SubmitText(subscriber, textField?.Text ?? "");
+                    }
+
+                    alert.AddTextField(tf =>
+                    {
+                        textField = tf;
+                        tf.Text = currentText;
+                        tf.AutocapitalizationType = UITextAutocapitalizationType.Words;
+                        tf.AutocorrectionType = UITextAutocorrectionType.Default;
+                        tf.ReturnKeyType = UIReturnKeyType.Done;
+                        tf.ShouldReturn = _ =>
+                        {
+                            alert.DismissViewController(true, () =>
+                            {
+                                DoSubmit();
+                            });
+                            return true;
+                        };
+                    });
+
+                    alert.AddAction(UIAlertAction.Create("OK", UIAlertActionStyle.Default, _ =>
+                    {
+                        DoSubmit();
+                    }));
+
+                    alert.AddAction(UIAlertAction.Create("Cancel", UIAlertActionStyle.Cancel, _ =>
+                    {
+                        if (submitted) return;
+                        submitted = true;
+                        CancelInput(subscriber);
+                    }));
+
+                    rootVC.PresentViewController(alert, true, () =>
+                    {
+                        textField?.BecomeFirstResponder();
+                    });
+                }
+                catch (Exception ex)
+                {
+                    EngineLogger.LogWarning($"[VirtualKeyboardManager] Error showing keyboard: {ex.Message}");
+                    _isKeyboardActive = false;
+                    _activeSubscriber = null;
+                }
+            });
+        }
+
+        public static void PromptManualInput(Action<string> onCompleted)
+        {
+            if (_isKeyboardActive) return;
+            _isKeyboardActive = true;
+
+            UIApplication.SharedApplication.BeginInvokeOnMainThread(() =>
+            {
+                try
+                {
+                    var rootVC = GameHost.GetActiveRootViewController();
+                    if (rootVC == null)
+                    {
+                        _isKeyboardActive = false;
+                        return;
+                    }
+
+                    var alert = UIAlertController.Create("Keyboard Input", null, UIAlertControllerStyle.Alert);
+                    UITextField? textField = null;
+
+                    bool submitted = false;
+                    void DoComplete()
+                    {
+                        if (submitted) return;
+                        submitted = true;
+                        _isKeyboardActive = false;
+                        onCompleted?.Invoke(textField?.Text ?? "");
+                    }
+
+                    alert.AddTextField(tf =>
+                    {
+                        textField = tf;
+                        tf.ReturnKeyType = UIReturnKeyType.Done;
+                        tf.ShouldReturn = _ =>
+                        {
+                            alert.DismissViewController(true, () =>
+                            {
+                                DoComplete();
+                            });
+                            return true;
+                        };
+                    });
+
+                    alert.AddAction(UIAlertAction.Create("OK", UIAlertActionStyle.Default, _ =>
+                    {
+                        DoComplete();
+                    }));
+
+                    alert.AddAction(UIAlertAction.Create("Cancel", UIAlertActionStyle.Cancel, _ =>
+                    {
+                        if (submitted) return;
+                        submitted = true;
+                        _isKeyboardActive = false;
+                    }));
+
+                    rootVC.PresentViewController(alert, true, () =>
+                    {
+                        textField?.BecomeFirstResponder();
+                    });
+                }
+                catch (Exception ex)
+                {
+                    EngineLogger.LogWarning($"[VirtualKeyboardManager] Error in manual prompt: {ex.Message}");
+                    _isKeyboardActive = false;
+                }
+            });
+        }
+
+        private static void SubmitText(object subscriber, string newText)
+        {
+            try
+            {
+                EngineLogger.Log($"[VirtualKeyboardManager] Submitting text: '{newText}'");
+                _lastSubmitTime = DateTime.UtcNow;
+                _lastSubmittedSubscriber = subscriber;
+
+                // 1. Direct property assignment sets the text value cleanly without appending
+                if (_textProp == null)
+                {
+                    _textProp = subscriber.GetType().GetProperty("Text");
+                }
+                _textProp?.SetValue(subscriber, newText);
+
+                // 2. Deselect subscriber
+                if (_selectedProp == null)
+                {
+                    _selectedProp = subscriber.GetType().GetProperty("Selected");
+                }
+                _selectedProp?.SetValue(subscriber, false);
+
+                // 3. Reset SimulatedMouse position so TextBox.Update doesn't re-select it immediately
+                ResetAllSimulatedMice();
+
+                // 4. Detach subscriber from keyboardDispatcher
+                if (_keyboardDispatcherInstance != null && _subscriberProp != null)
+                {
+                    _subscriberProp.SetValue(_keyboardDispatcherInstance, null);
+                }
+
+                // 5. Trigger Enter event
+                if (_onEnterPressedField == null)
+                {
+                    _onEnterPressedField = subscriber.GetType().GetField("OnEnterPressed", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+                }
+                var del = _onEnterPressedField?.GetValue(subscriber) as MulticastDelegate;
+                del?.DynamicInvoke(subscriber);
+            }
+            catch (Exception ex)
+            {
+                EngineLogger.LogWarning($"[VirtualKeyboardManager] SubmitText warning: {ex.Message}");
+            }
+            finally
+            {
+                _isKeyboardActive = false;
+                _activeSubscriber = null;
+            }
+        }
+
+        private static void CancelInput(object subscriber)
+        {
+            try
+            {
+                _lastSubmitTime = DateTime.UtcNow;
+                _lastSubmittedSubscriber = subscriber;
+
+                if (_selectedProp != null)
+                {
+                    _selectedProp.SetValue(subscriber, false);
+                }
+                ResetAllSimulatedMice();
+                if (_keyboardDispatcherInstance != null && _subscriberProp != null)
+                {
+                    _subscriberProp.SetValue(_keyboardDispatcherInstance, null);
+                }
+            }
+            catch { }
+            finally
+            {
+                _isKeyboardActive = false;
+                _activeSubscriber = null;
+            }
+        }
+
+        private static void ResetAllSimulatedMice()
+        {
+            try { TouchVirtualPad.Instance.ResetSimulatedMouse(); } catch { }
+            try
+            {
+                foreach (var asm in AppDomain.CurrentDomain.GetAssemblies())
+                {
+                    if (asm.GetName().Name == "SDViOSTouchControls")
+                    {
+                        var modTvp = asm.GetType("SDViOSTouchControls.TouchVirtualPad");
+                        var inst = modTvp?.GetProperty("Instance", BindingFlags.Public | BindingFlags.Static)?.GetValue(null);
+                        modTvp?.GetMethod("ResetSimulatedMouse", BindingFlags.Public | BindingFlags.Instance)?.Invoke(inst, null);
+                        break;
+                    }
+                }
+            }
+            catch { }
+        }
+
+        private static DateTime _lastReflectionAttempt = DateTime.MinValue;
+        private static bool _loggedReflectionWarning = false;
+
+        private static void EnsureReflection()
+        {
+            if (_reflectionInitialized && _keyboardDispatcherInstance != null) return;
+            if ((DateTime.UtcNow - _lastReflectionAttempt).TotalSeconds < 2.0) return;
+            _lastReflectionAttempt = DateTime.UtcNow;
+
+            try
+            {
+                foreach (var asm in AppDomain.CurrentDomain.GetAssemblies())
+                {
+                    var g1Type = asm.GetType("StardewValley.Game1");
+                    if (g1Type != null)
+                    {
+                        var dispatcherField = g1Type.GetField("instanceKeyboardDispatcher", BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic)
+                                           ?? g1Type.GetField("keyboardDispatcher", BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic);
+                        var dispatcherProp = g1Type.GetProperty("keyboardDispatcher", BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic);
+
+                        object? dispatcher = null;
+                        try
+                        {
+                            dispatcher = dispatcherField?.GetValue(null) ?? dispatcherProp?.GetValue(null);
+                        }
+                        catch { }
+
+                        if (dispatcher != null)
+                        {
+                            _keyboardDispatcherInstance = dispatcher;
+                            var kdType = dispatcher.GetType();
+                            _subscriberProp = kdType.GetProperty("Subscriber", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+                            _reflectionInitialized = true;
+                            EngineLogger.Log("[VirtualKeyboardManager] Hooked Stardew Valley keyboardDispatcher successfully.");
+                            break;
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                if (!_loggedReflectionWarning)
+                {
+                    _loggedReflectionWarning = true;
+                    EngineLogger.LogWarning($"[VirtualKeyboardManager] Reflection hook warning: {ex.Message}");
+                }
+            }
+        }
+    }
+}
